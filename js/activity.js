@@ -1,6 +1,7 @@
 // Find TODO statements and complete them to build the interactive airline route map.
 
 // TODO: add your uniqname to the HTML (use id #uniqname) file so that your work can be identified 
+// (Done in index.html)
 
 // TODO: import data using d3.csv()
 const dataFile = await d3.csv("data/routes.csv");
@@ -23,7 +24,8 @@ select.selectAll("option")
     .data(airlines)
     .join("option")
     .attr("value", d => d)
-    .text(d => d === "all" ? "All Airlines" : (airlineName[d] || d)); // TODO: build options from selector that allows us to view all airlines or filter by a specific airline
+    // TODO: build options from selector that allows us to view all airlines or filter by a specific airline
+    .text(d => d === "all" ? "All Airlines" : (airlineName[d] || d));
 
 // helper function to build outgoing links for each leaf node
 function bilink(root) {
@@ -32,9 +34,17 @@ function bilink(root) {
 
     // for each leaf node, build an outgoing array of [source, target, airline] tuples
     for (const d of root.leaves()) {
+        d.incoming = []; // Also tracking incoming routes
         d.outgoing = d.data.destinations
             .map(({ target, airline, targetRegion }) => [d, map.get(`root/${targetRegion}/${target}`), airline])
             .filter(([, target]) => target !== undefined);
+    }
+    
+    // populate incoming array for each leaf node
+    for (const d of root.leaves()) {
+        for (const o of d.outgoing) {
+            o[1].incoming.push(o);
+        }
     }
 
     return root;
@@ -54,35 +64,17 @@ function draw(airlineFilter) {
         : dataFile.filter(d => d.Airline === airlineFilter);
 
     // group data by source region and then by source airport
-    // Build a map of all unique airports and their regions to ensure they are all in the hierarchy tree
-    const airportMap = new Map();
-    filtered.forEach(d => {
-        airportMap.set(d["Source airport"], d["Source region"]);
-        airportMap.set(d["Destination airport"], d["Destination region"]);
-    });
-
-    // Group the filtered routes by source airport for easy lookup when building hierarchy children
-    const routesBySource = d3.group(filtered, d => d["Source airport"]);
-
-    // Group the complete set of airports by their region for hierarchy transformation
-    const airportsByRegion = d3.group(Array.from(airportMap.entries()), ([, region]) => region);
+    const grouped = d3.group(filtered, d => d["Source region"], d => d["Source airport"]);
 
     // transform grouped data into a hierarchy format suitable for the chart
     const hierarchyData = {
         name: "root",
-        children: Array.from(airportsByRegion, ([region, airports]) => ({
+        children: Array.from(grouped, ([region, airports]) => ({
             name: region,
-            children: airports.map(([airport]) => {
-                const routes = routesBySource.get(airport) || [];
-                return {
-                    name: airport,
-                    destinations: routes.map(r => ({
-                        target: r["Destination airport"],
-                        airline: r.Airline,
-                        targetRegion: r["Destination region"]
-                    }))
-                };
-            })
+            children: Array.from(airports, ([airport, routes]) => ({
+                name: airport,
+                destinations: routes.map(r => ({ target: r["Destination airport"], airline: r.Airline, targetRegion: r["Destination region"] }))
+            }))
         }))
     };
 
@@ -100,22 +92,12 @@ draw("all"); // initial draw
 function createChart(data) {
     const width = 928;
     const radius = width / 2;
-    const colorin = "blue";
-    const colorout = "red";
 
     const tree = d3.cluster()
         .size([2 * Math.PI, radius - 100]);
 
     const root = tree(bilink(d3.hierarchy(data)
         .sort((a, b) => d3.ascending(a.height, b.height) || d3.ascending(a.data.name, b.data.name))));
-
-    // Build incoming connections
-    for (const d of root.leaves()) d.incoming = [];
-    for (const d of root.leaves()) {
-        for (const o of d.outgoing) {
-            o[1].incoming.push(o);
-        }
-    }
 
     const svg = d3.create("svg")
         .attr("width", width)
@@ -134,8 +116,8 @@ function createChart(data) {
         .data(root.leaves().flatMap(leaf => leaf.outgoing))
         .join("path")
         .style("mix-blend-mode", "multiply")
+        .attr("stroke", d => airlineColor[d[2]] || colornone)
         .attr("d", ([i, o]) => line(i.path(o)))
-        .attr("stroke", ([, , airline]) => airlineColor[airline] || colornone)
         .each(function(d) { d.path = this; });
 
     const node = svg.append("g")
@@ -153,35 +135,49 @@ function createChart(data) {
         .on("mouseover", overed)
         .on("mouseout", outed)
         .call(text => text.append("title")
-            .text(d => `Airport: ${d.data.name} \nRegion: ${d.parent.data.name} \nOutgoing Routes: ${d.outgoing.length} \nIncoming Routes: ${d.incoming.length}`));
+            .text(d => `${d.data.name}\nRegion: ${d.parent.data.name}\nIncoming Routes: ${d.incoming.length}\nOutgoing Routes: ${d.outgoing.length}`)
+        );
 
     function overed(event, d) {
         link.style("mix-blend-mode", null);
-        link.attr("stroke", colornone); // Dim non-connected links
-        
         d3.select(this).attr("font-weight", "bold");
         
-        d3.selectAll(d.incoming.map(d => d.path))
-            .attr("stroke", colorin)
-            .attr("stroke-width", 3)
-            .raise();
-        d3.selectAll(d.incoming.map(([d]) => d.text)).attr("fill", colorin).attr("font-weight", "bold");
+        // Dim all links initially
+        link.attr("stroke", colornone);
         
-        d3.selectAll(d.outgoing.map(d => d.path))
-            .attr("stroke", colorout)
-            .attr("stroke-width", 3)
+        // Highlight incoming links and source nodes
+        d3.selectAll(d.incoming.map(l => l.path))
+            .attr("stroke", l => airlineColor[l[2]] || "blue")
+            .attr("stroke-width", 2)
             .raise();
-        d3.selectAll(d.outgoing.map(([, d]) => d.text)).attr("fill", colorout).attr("font-weight", "bold");
+        d3.selectAll(d.incoming.map(([source]) => source.text))
+            .attr("fill", "blue")
+            .attr("font-weight", "bold");
+            
+        // Highlight outgoing links and target nodes
+        d3.selectAll(d.outgoing.map(l => l.path))
+            .attr("stroke", l => airlineColor[l[2]] || "orange")
+            .attr("stroke-width", 2)
+            .raise();
+        d3.selectAll(d.outgoing.map(([, target]) => target.text))
+            .attr("fill", "orange")
+            .attr("font-weight", "bold");
     }
 
     function outed(event, d) {
         link.style("mix-blend-mode", "multiply");
-        link.attr("stroke", ([, , airline]) => airlineColor[airline] || colornone) // Restore airline colors
+        link.attr("stroke", l => airlineColor[l[2]] || colornone)
             .attr("stroke-width", null);
             
         d3.select(this).attr("font-weight", null);
-        d3.selectAll(d.incoming.map(([d]) => d.text)).attr("fill", null).attr("font-weight", null);
-        d3.selectAll(d.outgoing.map(([, d]) => d.text)).attr("fill", null).attr("font-weight", null);
+        
+        d3.selectAll(d.incoming.map(([source]) => source.text))
+            .attr("fill", null)
+            .attr("font-weight", null);
+            
+        d3.selectAll(d.outgoing.map(([, target]) => target.text))
+            .attr("fill", null)
+            .attr("font-weight", null);
     }
 
     return svg.node();
