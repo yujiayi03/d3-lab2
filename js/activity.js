@@ -54,17 +54,35 @@ function draw(airlineFilter) {
         : dataFile.filter(d => d.Airline === airlineFilter);
 
     // group data by source region and then by source airport
-    const grouped = d3.group(filtered, d => d["Source region"], d => d["Source airport"]);
+    // Build a map of all unique airports and their regions to ensure they are all in the hierarchy tree
+    const airportMap = new Map();
+    filtered.forEach(d => {
+        airportMap.set(d["Source airport"], d["Source region"]);
+        airportMap.set(d["Destination airport"], d["Destination region"]);
+    });
+
+    // Group the filtered routes by source airport for easy lookup when building hierarchy children
+    const routesBySource = d3.group(filtered, d => d["Source airport"]);
+
+    // Group the complete set of airports by their region for hierarchy transformation
+    const airportsByRegion = d3.group(Array.from(airportMap.entries()), ([, region]) => region);
 
     // transform grouped data into a hierarchy format suitable for the chart
     const hierarchyData = {
         name: "root",
-        children: Array.from(grouped, ([region, airports]) => ({
+        children: Array.from(airportsByRegion, ([region, airports]) => ({
             name: region,
-            children: Array.from(airports, ([airport, routes]) => ({
-                name: airport,
-                destinations: routes.map(r => ({ target: r["Destination airport"], airline: r.Airline, targetRegion: r["Destination region"] }))
-            }))
+            children: airports.map(([airport]) => {
+                const routes = routesBySource.get(airport) || [];
+                return {
+                    name: airport,
+                    destinations: routes.map(r => ({
+                        target: r["Destination airport"],
+                        airline: r.Airline,
+                        targetRegion: r["Destination region"]
+                    }))
+                };
+            })
         }))
     };
 
@@ -82,6 +100,8 @@ draw("all"); // initial draw
 function createChart(data) {
     const width = 928;
     const radius = width / 2;
+    const colorin = "blue";
+    const colorout = "red";
 
     const tree = d3.cluster()
         .size([2 * Math.PI, radius - 100]);
@@ -137,19 +157,30 @@ function createChart(data) {
 
     function overed(event, d) {
         link.style("mix-blend-mode", null);
+        link.attr("stroke", colornone); // Dim non-connected links
+        
         d3.select(this).attr("font-weight", "bold");
-        d3.selectAll(d.incoming.map(d => d.path)).attr("stroke-width", 3).raise();
-        d3.selectAll(d.incoming.map(([d]) => d.text)).attr("fill", "blue").attr("font-weight", "bold");
-        d3.selectAll(d.outgoing.map(d => d.path)).attr("stroke-width", 3).raise();
-        d3.selectAll(d.outgoing.map(([, d]) => d.text)).attr("fill", "red").attr("font-weight", "bold");
+        
+        d3.selectAll(d.incoming.map(d => d.path))
+            .attr("stroke", colorin)
+            .attr("stroke-width", 3)
+            .raise();
+        d3.selectAll(d.incoming.map(([d]) => d.text)).attr("fill", colorin).attr("font-weight", "bold");
+        
+        d3.selectAll(d.outgoing.map(d => d.path))
+            .attr("stroke", colorout)
+            .attr("stroke-width", 3)
+            .raise();
+        d3.selectAll(d.outgoing.map(([, d]) => d.text)).attr("fill", colorout).attr("font-weight", "bold");
     }
 
     function outed(event, d) {
         link.style("mix-blend-mode", "multiply");
+        link.attr("stroke", ([, , airline]) => airlineColor[airline] || colornone) // Restore airline colors
+            .attr("stroke-width", null);
+            
         d3.select(this).attr("font-weight", null);
-        d3.selectAll(d.incoming.map(d => d.path)).attr("stroke-width", null);
         d3.selectAll(d.incoming.map(([d]) => d.text)).attr("fill", null).attr("font-weight", null);
-        d3.selectAll(d.outgoing.map(d => d.path)).attr("stroke-width", null);
         d3.selectAll(d.outgoing.map(([, d]) => d.text)).attr("fill", null).attr("font-weight", null);
     }
 
